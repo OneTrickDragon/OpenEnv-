@@ -129,3 +129,59 @@ TASK_SPECS: dict[TaskID, str] = {
         Submit with action type='submit'.
     """).strip(),
 }
+
+def _make_ecommerce(rng: random.Random, np_rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns (dirty_df, gold_df) for the easy task."""
+    n = 500
+    statuses_clean = rng.choices(["pending", "shipped", "delivered", "cancelled"], k=n)
+    dates = pd.date_range("2023-01-01", periods=n, freq="12h")
+ 
+    gold = pd.DataFrame({
+        "order_id":    [f"ORD-{i:05d}" for i in range(n)],
+        "order_date":  dates,
+        "customer_id": [f"CUST-{rng.randint(1, 200):04d}" for _ in range(n)],
+        "product_id":  [f"PROD-{rng.randint(1, 50):03d}" for _ in range(n)],
+        "quantity":    np_rng.integers(1, 20, size=n).astype("int64"),
+        "price":       np_rng.uniform(1.5, 299.99, size=n).round(2),
+        "revenue":     None,
+        "status":      statuses_clean,
+    })
+    gold["revenue"] = (gold["quantity"] * gold["price"]).round(2)
+    gold = gold.astype({"quantity": "int64", "price": "float64", "revenue": "float64"})
+ 
+    dirty = gold.copy()
+
+    fmt_choices = ["%Y-%m-%d", "%d/%m/%Y", "%b %d, %Y"]
+    dirty["order_date"] = [
+        d.strftime(rng.choice(fmt_choices)) for d in dirty["order_date"]
+    ]
+
+    null_idx = rng.sample(range(n), k=int(n * 0.15))
+    dirty.loc[null_idx, "price"] = np.nan
+ 
+    # 3. negative quantities
+    neg_idx = rng.sample(range(n), k=int(n * 0.05))
+    dirty.loc[neg_idx, "quantity"] = np_rng.integers(-10, 0, size=len(neg_idx))
+ 
+    def fmt_rev(v: float) -> str:
+        choice = rng.randint(0, 2)
+        if choice == 0:   return f"${v:.2f}"
+        elif choice == 1: return f"{v:.2f} USD"
+        else:             return f"{str(v).replace('.', ',')}"
+    dirty["revenue"] = dirty["revenue"].apply(fmt_rev)
+
+    ws_idx = rng.sample(range(n), k=int(n * 0.2))
+    dirty.loc[ws_idx, "customer_id"] = dirty.loc[ws_idx, "customer_id"].apply(
+        lambda x: f"  {x}  " if rng.random() > 0.5 else f"\t{x}"
+    )
+
+    def corrupt_status(s: str) -> str:
+        r = rng.random()
+        if r < 0.1:  return s.upper()
+        if r < 0.15: return "complete" if s == "delivered" else s
+        return s
+    dirty["status"] = dirty["status"].apply(corrupt_status)
+
+    gold["revenue"] = (gold["quantity"].clip(lower=0) * gold["price"].fillna(gold["price"].median())).round(2)
+ 
+    return dirty, gold
