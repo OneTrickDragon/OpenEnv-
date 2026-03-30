@@ -542,3 +542,94 @@ EXPECTED_COLUMNS: dict[TaskID, list[str]] = {
                                     "transaction_date","account_open_date","parent_txn_id","violation","duplicate"],
 }
 
+def grade(output_df: pd.DataFrame, gold_df: pd.DataFrame,
+          task_id: TaskID, step_count: int, had_crash: bool) -> Reward:
+    """Compute decomposed reward for a finished episode."""
+ 
+    #Column quality
+    col_score, breakdown = _COL_GRADERS[task_id](output_df, gold_df)
+ 
+    #Schema compliance
+    expected = set(EXPECTED_COLUMNS[task_id])
+    actual   = set(output_df.columns)
+    schema_score = len(expected & actual) / len(expected)
+ 
+    #Row preservation
+    gold_rows   = gold_df.shape[0]
+    output_rows = output_df.shape[0]
+    row_score   = min(output_rows, gold_rows) / max(1, gold_rows)
+ 
+    #Efficiency
+    if step_count <= 10:
+        eff = 1.0
+    elif step_count <= 15:
+        eff = 1.0 - (step_count - 10) * 0.1
+    else:
+        eff = max(0.0, 0.5 - (step_count - 15) * 0.1)
+ 
+    #No-crash bonus
+    crash_bonus = 0.0 if had_crash else 0.05
+ 
+    total = (
+        0.50 * col_score
+      + 0.20 * schema_score
+      + 0.15 * row_score
+      + 0.10 * eff
+      + crash_bonus
+    )
+    total = round(min(1.0, max(0.0, total)), 4)
+ 
+    return Reward(
+        total             = total,
+        column_quality    = round(col_score,    4),
+        schema_compliance = round(schema_score, 4),
+        row_preservation  = round(row_score,    4),
+        efficiency        = round(eff,          4),
+        no_crash_bonus    = round(crash_bonus,  4),
+        breakdown         = breakdown,
+    )
+
+def partial_grade(output_df: pd.DataFrame, gold_df: pd.DataFrame, task_id: TaskID) -> float:
+    """Lightweight snapshot score used for dense reward during the episode."""
+    score, _ = _COL_GRADERS[task_id](output_df, gold_df)
+    return round(score, 4)
+
+def df_to_b64(df: pd.DataFrame) -> str:
+    import pickle
+    buf = io.BytesIO()
+    pickle.dump(df, buf)
+    return base64.b64encode(buf.getvalue()).decode()
+ 
+ 
+def b64_to_df(b64: str) -> pd.DataFrame:
+    import pickle
+    return pickle.load(io.BytesIO(base64.b64decode(b64)))
+
+def build_observation(
+    df: pd.DataFrame,
+    task_id: TaskID,
+    gold_df: pd.DataFrame,
+    step_count: int,
+    done: bool,
+    exec_result: str = "",
+    error: str = "",
+) -> Observation:
+    buf = io.StringIO()
+    df.info(buf=buf)
+ 
+    preview = df.head(10).to_markdown(index=False)
+    info    = buf.getvalue()
+    stats   = df.describe(include="all").to_string()
+    pscore  = partial_grade(df, gold_df, task_id)
+ 
+    return Observation(
+        df_preview    = preview,
+        df_info       = info,
+        df_stats      = stats,
+        task_spec     = TASK_SPECS[task_id],
+        exec_result   = exec_result,
+        step_count    = step_count,
+        partial_score = pscore,
+        done          = done,
+        error         = error,
+    )
