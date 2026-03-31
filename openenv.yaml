@@ -1,0 +1,125 @@
+name: data-cleaning-env
+version: 0.1.0
+description: >
+  OpenEnv environment where an agent cleans messy tabular datasets using a
+  sandboxed Python REPL. Three tasks: e-commerce orders (easy), patient
+  records deduplication (medium), financial transaction auditing (hard).
+  Dense partial rewards are returned after every exec step.
+
+tags:
+  - data-engineering
+  - tabular
+  - repl
+  - partial-reward
+  - openenv
+
+tasks:
+  - id: ecommerce_easy
+    difficulty: easy
+    rows: 500
+    cols: 8
+    baseline_score_gpt4o: 0.78
+  - id: patient_records_medium
+    difficulty: medium
+    rows: 1200
+    cols: 9
+    baseline_score_gpt4o: 0.55
+  - id: financial_audit_hard
+    difficulty: hard
+    rows: 5000
+    cols: 12
+    baseline_score_gpt4o: 0.30
+
+action_space:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [exec, submit]
+    code:
+      type: string
+      description: Python snippet up to 50 lines. df is in scope. Required when type=exec.
+
+observation_space:
+  type: object
+  properties:
+    df_preview:
+      type: string
+      description: First 10 rows as markdown table
+    df_info:
+      type: string
+      description: dtypes and null counts
+    df_stats:
+      type: string
+      description: df.describe() output
+    task_spec:
+      type: string
+      description: Plain-English objective and constraints
+    exec_result:
+      type: string
+      description: stdout and stderr from last code execution
+    step_count:
+      type: integer
+      minimum: 0
+    partial_score:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+    done:
+      type: boolean
+    error:
+      type: string
+      description: Exception message if last exec raised
+
+reward_space:
+  type: object
+  properties:
+    total:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+    column_quality:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+      weight: 0.50
+    schema_compliance:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+      weight: 0.20
+    row_preservation:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+      weight: 0.15
+    efficiency:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+      weight: 0.10
+    no_crash_bonus:
+      type: number
+      minimum: 0.0
+      maximum: 0.05
+
+episode:
+  max_steps: 20
+  termination: submit action OR max_steps exceeded
+  seed: integer controlling dataset corruption pattern
+
+sandbox:
+  language: python3.11
+  allowed_imports:
+    - pandas
+    - numpy
+    - re
+    - datetime
+    - difflib
+    - unicodedata
+    - collections
+    - itertools
+    - math
+    - string
+  max_lines_per_step: 50
+  blocked: file I/O, network, subprocess
