@@ -1,123 +1,125 @@
+"""
+client.py — Python client for the Data Cleaning OpenEnv environment.
+
+Subclasses openenv.core.env_client.EnvClient which uses a persistent
+WebSocket connection (/ws) for low-latency multi-step interaction.
+
+Usage (async — recommended for training loops):
+    import asyncio
+    from client import DataCleaningEnv
+    from models import DataCleaningAction
+
+    async def main():
+        async with DataCleaningEnv(base_url="http://localhost:8000") as env:
+            result = await env.reset(task_id="ecommerce_easy", seed=42)
+            print(result.observation.task_spec)
+            print(result.observation.df_preview)
+
+            while not result.done:
+                result = await env.step(DataCleaningAction(
+                    type="exec",
+                    code="df['price'] = df['price'].fillna(df['price'].median())"
+                ))
+                print(f"step={result.observation.step_count} "
+                      f"partial_score={result.observation.partial_score:.3f}")
+
+            print(f"Final score: {result.reward:.4f}")
+
+    asyncio.run(main())
+
+Usage (sync wrapper — for notebooks and scripts):
+    from client import DataCleaningEnv
+    from models import DataCleaningAction
+
+    with DataCleaningEnv(base_url="http://localhost:8000").sync() as env:
+        result = env.reset(task_id="ecommerce_easy", seed=42)
+        result = env.step(DataCleaningAction(type="exec", code="df.dropna()"))
+        result = env.step(DataCleaningAction(type="submit"))
+        print(f"Final score: {result.reward:.4f}")
+
+Connect to a live HuggingFace Space:
+    with DataCleaningEnv(base_url="https://YOUR-USERNAME-data-cleaning-openenv.hf.space").sync() as env:
+        result = env.reset()
+"""
+
 from __future__ import annotations
- 
-from typing import Any, Optional
- 
-import httpx
- 
+
+from typing import Optional
+
+from openenv.core.env_client import EnvClient
+from openenv.core.client_types import StepResult
+
 from models import (
-    Action, ActionType, Observation, Reward, State, TaskID,
-    ResetRequest, StepRequest,
+    DataCleaningAction,
+    DataCleaningObservation,
+    DataCleaningState,
+    TaskID,
 )
 
-class DataCleaningEnvClient:
-    """
-    Thin HTTP client wrapping the OpenEnv server.
- 
-    All public methods mirror the canonical OpenEnv interface:
-        reset()  → Observation
-        step()   → (Observation, Optional[Reward], bool, dict)
-        state()  → State
-    """
- 
-    def __init__(self, base_url: str = "http://localhost:8000", timeout: float = 30.0):
-        self.base_url   = base_url.rstrip("/")
-        self.timeout    = timeout
-        self._session_id: Optional[str] = None
-        self._http      = httpx.Client(timeout=timeout)
 
-    # Core OpenEnv interface
-    def reset(
-        self,
-        task_id: str | TaskID = TaskID.ECOMMERCE_EASY,
-        seed: int = 42,
-    ) -> Observation:
-        """
-        Start a new episode.
- 
-        Returns the initial Observation.  Stores the session_id internally
-        so subsequent step() / state() calls are automatically routed.
-        """
-        if isinstance(task_id, str):
-            task_id = TaskID(task_id)
- 
-        payload = ResetRequest(task_id=task_id, seed=seed)
-        resp    = self._post("/reset", payload.model_dump())
-        self._session_id = resp["session_id"]
-        return Observation(**resp["observation"])
- 
-    def step(
-        self,
-        action: Action,
-    ) -> tuple[Observation, Optional[Reward], bool, dict[str, Any]]:
-        """
-        Send one action to the environment.
- 
-        Returns (observation, reward, done, info).
-        `reward` is only populated when done=True.
-        """
-        self._require_session()
-        payload = StepRequest(session_id=self._session_id, action=action)
-        resp    = self._post("/step", payload.model_dump())
- 
-        obs    = Observation(**resp["observation"])
-        reward = Reward(**resp["reward"]) if resp.get("reward") else None
-        done   = bool(resp["done"])
-        info   = dict(resp.get("info", {}))
-        return obs, reward, done, info
- 
-    def state(self) -> Observation:
-        """
-        Return the last observation — the canonical OpenEnv state() call.
- 
-        Use this to checkpoint the current episode state or inspect what
-        the agent last saw without consuming a step.
-        """
-        self._require_session()
-        resp = self._get(f"/observation/{self._session_id}")
-        return Observation(**resp)
- 
-    def raw_state(self) -> State:
-        """Return the internal episode state for debugging (not for training)."""
-        self._require_session()
-        resp = self._get(f"/state/{self._session_id}")
-        return State(**resp["state"])
- 
-    # Convenience helpers
-    def step_exec(
-        self,
-        code: str,
-    ) -> tuple[Observation, Optional[Reward], bool, dict[str, Any]]:
-        """Shorthand for step(Action(type='exec', code=code))."""
-        return self.step(Action(type=ActionType.EXEC, code=code))
- 
-    def step_submit(self) -> tuple[Observation, Optional[Reward], bool, dict[str, Any]]:
-        """Shorthand for step(Action(type='submit'))."""
-        return self.step(Action(type=ActionType.SUBMIT))
- 
-    def available_tasks(self) -> list[dict]:
-        """List all tasks with difficulty and size metadata."""
-        return self._get("/tasks")["tasks"]
- 
-    def health(self) -> dict:
-        return self._get("/health")
+class DataCleaningEnv(EnvClient[DataCleaningAction, DataCleaningObservation, DataCleaningState]):
+    """
+    WebSocket client for the Data Cleaning environment.
 
-    # Internal helpers
-    def _require_session(self) -> None:
-        if not self._session_id:
-            raise RuntimeError("No active session. Call reset() first.")
- 
-    def _post(self, path: str, body: dict) -> dict:
-        r = self._http.post(f"{self.base_url}{path}", json=body)
-        r.raise_for_status()
-        return r.json()
- 
-    def _get(self, path: str) -> dict:
-        r = self._http.get(f"{self.base_url}{path}")
-        r.raise_for_status()
-        return r.json()
- 
-    def __repr__(self) -> str:
-        return (
-            f"DataCleaningEnvClient(base_url={self.base_url!r}, "
-            f"session_id={self._session_id!r})"
+    Inherits reset(), step(), state(), sync(), close(), from_env(),
+    and from_docker_image() from EnvClient.
+    Only the payload serialisation and response parsing are environment-specific.
+    """
+    # Required: convert our typed action to the JSON the server expects
+    def _step_payload(self, action: DataCleaningAction) -> dict:
+        return {
+            "type":    action.type,
+            "code":    action.code,
+            "task_id": action.task_id,
+            "seed":    action.seed,
+        }
+
+    # Required: parse the server's JSON response into typed objects
+    def _parse_result(self, payload: dict) -> StepResult[DataCleaningObservation]:
+        obs_data = payload.get("observation", {})
+        obs = DataCleaningObservation(
+            df_preview    = obs_data.get("df_preview",    ""),
+            df_info       = obs_data.get("df_info",       ""),
+            df_stats      = obs_data.get("df_stats",      ""),
+            task_spec     = obs_data.get("task_spec",     ""),
+            exec_result   = obs_data.get("exec_result",   ""),
+            step_count    = obs_data.get("step_count",    0),
+            partial_score = obs_data.get("partial_score", 0.0),
+            done          = obs_data.get("done",          False),
+            error         = obs_data.get("error",         ""),
+            reward        = obs_data.get("reward",        payload.get("reward", 0.0)),
         )
+        return StepResult(
+            observation = obs,
+            reward      = payload.get("reward", 0.0),
+            done        = payload.get("done", False),
+        )
+
+    def _parse_state(self, payload: dict) -> DataCleaningState:
+        return DataCleaningState(
+            episode_id   = payload.get("episode_id",   ""),
+            df_state_b64 = payload.get("df_state_b64", ""),
+            gold_b64     = payload.get("gold_b64",     ""),
+            task_id      = payload.get("task_id",      "ecommerce_easy"),
+            seed         = payload.get("seed",         42),
+            step_count   = payload.get("step_count",   0),
+            done         = payload.get("done",         False),
+            had_crash    = payload.get("had_crash",    False),
+        )
+
+    async def reset(
+        self,
+        task_id: str = "ecommerce_easy",
+        seed:    int = 42,
+    ) -> StepResult[DataCleaningObservation]:
+        """Start a new episode. Passes task_id and seed via a reset action."""
+        action = DataCleaningAction(type="exec", task_id=task_id, seed=seed)
+        return await super().reset(action)
+
+    async def exec(self, code: str) -> StepResult[DataCleaningObservation]:
+        """Shorthand: execute a Python snippet."""
+        return await self.step(DataCleaningAction(type="exec", code=code))
+
+    async def submit(self) -> StepResult[DataCleaningObservation]:
+        """Shorthand: submit the current DataFrame and get the final reward."""
+        return await self.step(DataCleaningAction(type="submit"))
