@@ -16,7 +16,7 @@ from openenv.core.env_server import create_fastapi_app
 from models import DataCleaningAction, DataCleaningObservation
 from server.dc_environment import DataCleaningEnvironment
 
-env = DataCleaningEnvironment()
+env = DataCleaningEnvironment
 
 app = create_fastapi_app(env, DataCleaningAction, DataCleaningObservation)
 
