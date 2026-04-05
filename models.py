@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from openenv.core.env_server import Action, Observation, State
 
+
 # Enums
 class ActionType(str, Enum):
     EXEC   = "exec"    # execute a Python snippet against the live DataFrame
@@ -25,7 +26,7 @@ class TaskID(str, Enum):
     FINANCIAL_AUDIT_HARD   = "financial_audit_hard"
 
 # Action
-@dataclass
+@dataclass(kw_only=True)
 class DataCleaningAction(Action):
     """
     What the agent sends on each turn.
@@ -43,7 +44,7 @@ class DataCleaningAction(Action):
     seed:    int           = 42
 
 # Observation
-@dataclass
+@dataclass(kw_only=True)
 class DataCleaningObservation(Observation):
     """
     Everything the agent sees after each step or reset.
@@ -70,8 +71,8 @@ class DataCleaningObservation(Observation):
     error:         str   = ""
     reward:        float = 0.0
 
-# State
-@dataclass
+# State  (server-side canonical truth)
+@dataclass(kw_only=True)
 class DataCleaningState(State):
     """
     Full serialisable state of one episode.
@@ -84,12 +85,15 @@ class DataCleaningState(State):
     step_count     — steps consumed so far.
     done           — episode finished flag.
     had_crash      — True if any exec step raised an unhandled exception.
+
+    Uses kw_only=True so that all fields are keyword-only and defaults work
+    regardless of what required fields the base State class declares.
     """
-    episode_id:  str  = ""
-    df_state_b64: str = ""
-    gold_b64:    str  = ""
-    task_id:     str  = "ecommerce_easy"
-    seed:        int  = 42
-    step_count:  int  = 0
-    done:        bool = False
-    had_crash:   bool = False
+    episode_id:   str  = field(default="")
+    df_state_b64: str  = field(default="")
+    gold_b64:     str  = field(default="")
+    task_id:      str  = field(default="ecommerce_easy")
+    seed:         int  = field(default=42)
+    step_count:   int  = field(default=0)
+    done:         bool = field(default=False)
+    had_crash:    bool = field(default=False)

@@ -50,7 +50,16 @@ class DataCleaningEnvironment(Environment):
 
     def __init__(self) -> None:
         super().__init__()
-        self._state = DataCleaningState()
+        self._state = DataCleaningState(
+            episode_id   = "",
+            df_state_b64 = "",
+            gold_b64     = "",
+            task_id      = "ecommerce_easy",
+            seed         = 42,
+            step_count   = 0,
+            done         = False,
+            had_crash    = False,
+        )
 
     # Core OpenEnv interface
     def reset(self, action: DataCleaningAction | None = None) -> DataCleaningObservation:
