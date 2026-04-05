@@ -16,6 +16,7 @@
 fastapi>=0.111.0,<0.200.0
 uvicorn[standard]>=0.29.0,<0.40.0
 pydantic>=2.7.0,<3.0.0
+openenv-core[core]>=0.2.1
 
 #Core data
 pandas>=2.2.0,<4.0.0

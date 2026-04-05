@@ -8,7 +8,6 @@ LABEL space_sdk_type="openenv"
 
 WORKDIR /app
 
-#Install environment-specific dependencies
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
@@ -18,11 +17,10 @@ COPY client.py          ./client.py
 COPY pyproject.toml     ./pyproject.toml
 COPY server/            ./server/
 
-#Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:7860/health || exit 1
 
-#HuggingFace Spaces requires port 7860
+
 EXPOSE 7860
 
 #Non-root user (security)
