@@ -24,7 +24,7 @@ from models import (
     ActionType,
     TaskID,
 )
-from server.dc_environment import (
+from server.environment import (
     MAX_STEPS,
     TASK_SPECS,
     build_observation,
