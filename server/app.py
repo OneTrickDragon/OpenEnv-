@@ -19,6 +19,28 @@ from server.dc_environment import DataCleaningEnvironment
 env = DataCleaningEnvironment
 
 app = create_fastapi_app(env, DataCleaningAction, DataCleaningObservation)
+@app.get("/")
+def root():
+    return {
+        "name":        "Data Cleaning OpenEnv",
+        "version":     "0.1.0",
+        "status":      "running",
+        "framework":   "openenv-core",
+        "endpoints": {
+            "health":    "/health",
+            "reset":     "POST /reset",
+            "step":      "POST /step",
+            "state":     "GET  /state",
+            "websocket": "/ws",
+            "web_ui":    "/web",
+            "docs":      "/docs",
+        },
+        "tasks": [
+            "ecommerce_easy",
+            "patient_records_medium",
+            "financial_audit_hard",
+        ],
+    }
 
 if __name__ == "__main__":
     import uvicorn
