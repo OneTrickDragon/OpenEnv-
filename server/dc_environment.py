@@ -1,10 +1,6 @@
 """
 server/dc_environment.py — DataCleaningEnvironment subclassing the real
 openenv.core.env_server.Environment base class.
-
-The simulation logic (dataset generation, sandbox, grader) lives in
-environment.py and is unchanged. This file is the thin OpenEnv-compliant
-wrapper around it.
 """
 
 from __future__ import annotations
