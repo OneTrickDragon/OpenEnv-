@@ -1,13 +1,11 @@
 """
 server/dc_environment.py — DataCleaningEnvironment subclassing
-openenv.core.env_server.Environment.
-
-The simulation logic (dataset generation, sandbox, grader) lives in
-environment.py and is unchanged. This file is the thin OpenEnv wrapper.
+openenv_core.env_server.Environment.
 """
 
 from __future__ import annotations
 
+import copy
 import io as _io
 import os
 import sys
@@ -15,7 +13,12 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from openenv.core.env_server import Environment
+try:
+    from openenv.core.env_server import Environment
+except ImportError:
+    class Environment:  # type: ignore[no-redef]
+        is_concurrent_safe = False
+        def __init__(self): pass
 
 from models import (
     DataCleaningAction,
@@ -36,12 +39,8 @@ from server.environment import (
 )
 
 
-# Typed observation builder (returns DataCleaningObservation directly)
-
-def _build_obs(
-    df, task_id, gold_df, step_count, done,
-    exec_result="", error=""
-) -> DataCleaningObservation:
+def _build_obs(df, task_id, gold_df, step_count, done,
+               exec_result="", error="") -> DataCleaningObservation:
     buf = _io.StringIO()
     df.info(buf=buf)
     return DataCleaningObservation(
@@ -53,35 +52,27 @@ def _build_obs(
         step_count    = step_count,
         partial_score = _partial_grade(df, gold_df, task_id),
         done          = done,
-        error         = error,
         reward        = 0.0,
+        error         = error,
     )
 
 
-# Environment
 class DataCleaningEnvironment(Environment):
     """
-    OpenEnv-compliant environment for tabular data cleaning.
+    OpenEnv-compliant tabular data cleaning environment.
 
-    Three tasks of increasing difficulty:
-      ecommerce_easy         — 500 rows,  type/null/format fixes
-      patient_records_medium — 1 200 rows, fuzzy dedup + normalisation
-      financial_audit_hard   — 5 000 rows, 10 named business rules
-
-    Rewards are dense: partial_score updates after every exec step.
+    Three tasks: ecommerce_easy / patient_records_medium / financial_audit_hard.
+    Dense partial rewards after every exec step.
     """
 
     is_concurrent_safe = True
 
     def __init__(self) -> None:
         super().__init__()
-        # Start with a blank pre-episode state.
-        # All fields are Optional/defaulted so no required args are missing.
         self._state = DataCleaningState()
 
-    # Core OpenEnv interface
     def reset(self, action: DataCleaningAction | None = None) -> DataCleaningObservation:
-        """Start a new episode. Reads task_id and seed from the action."""
+        """Start a new episode. task_id and seed come from the action."""
         task_id_str = (action.task_id if action else None) or "ecommerce_easy"
         seed        = int((action.seed if action else None) or 42)
 
@@ -92,7 +83,6 @@ class DataCleaningEnvironment(Environment):
 
         dirty_df, gold_df = generate_datasets(task_id, seed)
 
-        # Pydantic models are immutable by default — always construct fresh.
         self._state = DataCleaningState(
             episode_id   = str(uuid.uuid4()),
             df_state_b64 = df_to_b64(dirty_df),
@@ -117,41 +107,33 @@ class DataCleaningEnvironment(Environment):
                 error="Episode already finished. Call reset() to start a new one.",
             )
 
-        df      = b64_to_df(self._state.df_state_b64)
-        gold_df = b64_to_df(self._state.gold_b64)
-        task_id = TaskID(self._state.task_id)
-
-        # Unpack current mutable fields from immutable state
-        step_count  = self._state.step_count
-        had_crash   = self._state.had_crash
-        exec_result = ""
-        error_msg   = ""
+        df         = b64_to_df(self._state.df_state_b64)
+        gold_df    = b64_to_df(self._state.gold_b64)
+        task_id    = TaskID(self._state.task_id)
+        step_count = self._state.step_count
+        had_crash  = self._state.had_crash
+        exec_result = error_msg = ""
         final_reward = 0.0
-        done        = False
+        done = False
 
         if action.type == ActionType.SUBMIT or step_count >= MAX_STEPS:
-            done = True
-            reward_obj   = grade(df, gold_df, task_id, step_count, had_crash)
-            final_reward = reward_obj.total
-
+            done         = True
+            final_reward = grade(df, gold_df, task_id, step_count, had_crash).total
         else:
-            result = run_in_sandbox(action.code or "pass", df)
+            result      = run_in_sandbox(action.code or "pass", df)
             exec_result = (result.stdout + result.stderr).strip()
             error_msg   = result.error
-
             if result.success:
                 df = result.df
             else:
                 had_crash = True
-
             step_count += 1
-
             if step_count >= MAX_STEPS:
-                done = True
-                reward_obj   = grade(df, gold_df, task_id, step_count, had_crash)
-                final_reward = reward_obj.total
+                done         = True
+                final_reward = grade(df, gold_df, task_id, step_count, had_crash).total
 
-        # Always construct a fresh state (Pydantic immutability)
+        # Always build a fresh state (dataclasses are mutable, but constructing
+        # fresh is cleaner and avoids any shared-reference bugs)
         self._state = DataCleaningState(
             episode_id   = self._state.episode_id,
             df_state_b64 = df_to_b64(df),
@@ -164,8 +146,8 @@ class DataCleaningEnvironment(Environment):
         )
 
         obs = _build_obs(df, task_id, gold_df, step_count, done, exec_result, error_msg)
-        # reward lives on Observation in the OpenEnv spec
-        return obs.model_copy(update={"reward": final_reward})
+        obs.reward = final_reward
+        return obs
 
     @property
     def state(self) -> DataCleaningState:
