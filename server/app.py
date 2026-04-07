@@ -1,5 +1,5 @@
 """
-server/app.py — FastAPI server using openenv_core.
+server/app.py — FastAPI server using open_env.core.
 
 create_app() wires up /reset, /step, /state, /health, /ws, /web.
 GET / added so HuggingFace Space health probes return 200.
@@ -15,9 +15,7 @@ from openenv.core.env_server import create_app
 from models import DataCleaningAction, DataCleaningObservation
 from server.dc_environment import DataCleaningEnvironment
 
-env = DataCleaningEnvironment
-
-app = create_app(env, DataCleaningAction, DataCleaningObservation)
+app = create_app(DataCleaningEnvironment, DataCleaningAction, DataCleaningObservation)
 
 
 @app.get("/")
@@ -38,6 +36,13 @@ def root():
     }
 
 
-if __name__ == "__main__":
+def main():
+    """Entrypoint for `uv run server` and direct execution."""
     import uvicorn
-    uvicorn.run("server.app:app", host="0.0.0.0", port=7860, reload=True)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "7860"))
+    uvicorn.run("server.app:app", host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()
