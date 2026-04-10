@@ -30,10 +30,9 @@ from openai import OpenAI
 # ---------------------------------------------------------------------------
 
 IMAGE_NAME   = os.getenv("LOCAL_IMAGE_NAME")
-# Use the validator-injected API_KEY and API_BASE_URL strictly — no fallbacks
-API_KEY      = os.environ["API_KEY"]
-API_BASE_URL = os.environ["API_BASE_URL"]
 MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
+# API_KEY and API_BASE_URL are read inside run_episode() at runtime
+# so the validator's injected values are guaranteed to be used.
 TASK_NAME    = os.getenv("DC_TASK",      "ecommerce_easy")
 BENCHMARK    = "data-cleaning-openenv"
 DC_SEED      = int(os.getenv("DC_SEED",  "42"))
@@ -44,11 +43,8 @@ TEMPERATURE             = 0.3
 MAX_TOKENS              = 512
 SUCCESS_SCORE_THRESHOLD = 0.5
 
-# ---------------------------------------------------------------------------
-# OpenAI client (configured via env vars as required by submission spec)
-# ---------------------------------------------------------------------------
-
-client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+# OpenAI client is instantiated inside main() to ensure env vars are read
+# at runtime, not at import time.
 
 # ---------------------------------------------------------------------------
 # Import environment client — handle path issues gracefully
@@ -143,7 +139,7 @@ def build_prompt(obs, step: int, prev_result: str = "") -> str:
     return "\n\n".join(parts)
 
 
-def get_model_action(messages: list) -> str:
+def get_model_action(client: OpenAI, messages: list) -> str:
     try:
         completion = client.chat.completions.create(
             model       = MODEL_NAME,
@@ -179,6 +175,12 @@ async def run_episode() -> None:
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
     try:
+        # Instantiate client here so env vars are read at runtime
+        client = OpenAI(
+            base_url=os.environ["API_BASE_URL"],
+            api_key=os.environ["API_KEY"],
+        )
+
         DataCleaningEnv, DataCleaningAction = _load_env_client()
 
         # Connect: docker image takes priority, then live URL
@@ -201,7 +203,7 @@ async def run_episode() -> None:
                 if result.done:
                     break
 
-                response_text = get_model_action(messages)
+                response_text = get_model_action(client, messages)
                 messages.append({"role": "assistant", "content": response_text})
 
                 code, submit = parse_action(response_text)
