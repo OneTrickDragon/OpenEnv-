@@ -31,7 +31,7 @@ from openai import OpenAI
 # ---------------------------------------------------------------------------
 
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 TASK_NAME  = os.getenv("DC_TASK",    "ecommerce_easy")
 BENCHMARK  = "data-cleaning-openenv"
 DC_SEED    = int(os.getenv("DC_SEED", "42"))
