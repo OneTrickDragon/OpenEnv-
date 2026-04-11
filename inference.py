@@ -6,83 +6,44 @@ Mandatory stdout format:
     [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
     [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 
-Environment variables:
-    HF_TOKEN          Your HF token (used as API key). Required.
-    API_BASE_URL      LLM endpoint. Default: https://router.huggingface.co/v1
-    MODEL_NAME        Model identifier. Default: Qwen/Qwen2.5-72B-Instruct
-    LOCAL_IMAGE_NAME  Docker image from Space registry (for from_docker_image mode).
-    DC_ENV_URL        Live Space URL (used if LOCAL_IMAGE_NAME not set).
-                      Default: https://onetrickdragon-data-cleaning-openenv.hf.space
+Environment variables (injected by validator):
+    API_KEY           LLM API key (injected by validator proxy)
+    API_BASE_URL      LLM proxy endpoint (injected by validator)
+    MODEL_NAME        Model to use. Default: Qwen/Qwen2.5-72B-Instruct
+    LOCAL_IMAGE_NAME  Docker image for the environment (optional)
+    DC_ENV_URL        Live Space URL. Default: the deployed HF Space
     DC_TASK           Task name. Default: ecommerce_easy
     DC_SEED           RNG seed. Default: 42
 """
 
 import asyncio
+import json
 import os
 import sys
 import textwrap
+import traceback
 from typing import List, Optional
 
 from openai import OpenAI
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — read at call time inside functions, not at import time
 # ---------------------------------------------------------------------------
 
-IMAGE_NAME   = os.getenv("LOCAL_IMAGE_NAME")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-# API_KEY and API_BASE_URL are read inside run_episode() at runtime
-# so the validator's injected values are guaranteed to be used.
-TASK_NAME    = os.getenv("DC_TASK",      "ecommerce_easy")
-BENCHMARK    = "data-cleaning-openenv"
-DC_SEED      = int(os.getenv("DC_SEED",  "42"))
-ENV_URL      = os.getenv("DC_ENV_URL",   "https://onetrickdragon-data-cleaning-openenv.hf.space")
+IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+TASK_NAME  = os.getenv("DC_TASK",    "ecommerce_easy")
+BENCHMARK  = "data-cleaning-openenv"
+DC_SEED    = int(os.getenv("DC_SEED", "42"))
+ENV_URL    = os.getenv("DC_ENV_URL", "https://onetrickdragon-data-cleaning-openenv.hf.space")
 
 MAX_STEPS               = 8
 TEMPERATURE             = 0.3
 MAX_TOKENS              = 512
 SUCCESS_SCORE_THRESHOLD = 0.5
 
-# OpenAI client is instantiated inside main() to ensure env vars are read
-# at runtime, not at import time.
-
 # ---------------------------------------------------------------------------
-# Import environment client — handle path issues gracefully
-# ---------------------------------------------------------------------------
-
-def _load_env_client():
-    """
-    Import DataCleaningEnv and DataCleaningAction.
-    Tries local directory first, then falls back to the open-env GenericEnvClient
-    so the script works even when run from /tmp/workspace/ by the validator.
-    """
-    # Add the script's own directory to path so local imports work
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    if script_dir not in sys.path:
-        sys.path.insert(0, script_dir)
-
-    try:
-        from client import DataCleaningEnv
-        from models import DataCleaningAction
-        return DataCleaningEnv, DataCleaningAction
-    except ImportError:
-        pass
-
-    # Fallback: use the open-env GenericEnvClient with raw dicts
-    try:
-        from openenv.core.env_client import GenericEnvClient, GenericAction
-        return GenericEnvClient, GenericAction
-    except ImportError:
-        pass
-
-    raise ImportError(
-        "Cannot import environment client. "
-        "Ensure client.py and models.py are in the same directory as inference.py, "
-        "or install open-env: pip install open-env"
-    )
-
-# ---------------------------------------------------------------------------
-# Logging helpers
+# Logging
 # ---------------------------------------------------------------------------
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -90,11 +51,11 @@ def log_start(task: str, env: str, model: str) -> None:
 
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    action_safe = action.replace("\n", " ").replace("\r", " ")[:200]
-    error_val   = error if error else "null"
+    action_safe = str(action).replace("\n", " ").replace("\r", " ")[:200]
     print(
         f"[STEP] step={step} action={action_safe} "
-        f"reward={reward:.2f} done={str(done).lower()} error={error_val}",
+        f"reward={reward:.2f} done={str(done).lower()} "
+        f"error={error if error else 'null'}",
         flush=True,
     )
 
@@ -113,28 +74,27 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 
 SYSTEM_PROMPT = textwrap.dedent("""\
     You are a data engineering expert working in a Python REPL.
-    You have a pandas DataFrame called `df` and must clean it according to the task spec.
-
+    You have a pandas DataFrame called `df` and must clean it per the task spec.
     Rules:
-    - Write Python code that modifies `df` in place.
-    - Available: pd, np, re, math, datetime (all pre-injected — no import needed).
-    - No file I/O. No network calls. Max 20 lines per response.
-    - Write ONLY the Python code — no explanation, no markdown fences.
-    - When you have finished all cleaning steps, respond with exactly: SUBMIT
+    - Modify `df` in place using Python code.
+    - Available: pd, np, re, math, datetime (pre-injected).
+    - No file I/O. No network. Max 20 lines per response.
+    - Write ONLY Python code — no markdown fences, no explanation.
+    - When finished, write exactly: SUBMIT
 """).strip()
 
 
-def build_prompt(obs, step: int, prev_result: str = "") -> str:
+def build_prompt(obs_dict: dict, step: int, prev_result: str = "") -> str:
     parts = [
-        f"TASK:\n{obs.task_spec}",
-        f"DATAFRAME (first 10 rows):\n{obs.df_preview}",
-        f"DTYPES:\n{obs.df_info}",
-        f"PARTIAL SCORE: {obs.partial_score:.3f}  |  STEP: {step}/{MAX_STEPS}",
+        f"TASK:\n{obs_dict.get('task_spec', '')}",
+        f"DATAFRAME:\n{obs_dict.get('df_preview', '')}",
+        f"DTYPES:\n{obs_dict.get('df_info', '')}",
+        f"PARTIAL SCORE: {obs_dict.get('partial_score', 0):.3f}  STEP: {step}/{MAX_STEPS}",
     ]
     if prev_result:
         parts.append(f"LAST OUTPUT:\n{prev_result[:300]}")
-    if obs.error:
-        parts.append(f"ERROR: {obs.error[:200]}")
+    if obs_dict.get("error"):
+        parts.append(f"ERROR: {obs_dict['error'][:200]}")
     parts.append("Your code (or SUBMIT):")
     return "\n\n".join(parts)
 
@@ -142,24 +102,53 @@ def build_prompt(obs, step: int, prev_result: str = "") -> str:
 def get_model_action(client: OpenAI, messages: list) -> str:
     try:
         completion = client.chat.completions.create(
-            model       = MODEL_NAME,
-            messages    = messages,
-            temperature = TEMPERATURE,
-            max_tokens  = MAX_TOKENS,
-            stream      = False,
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+            stream=False,
         )
         return (completion.choices[0].message.content or "").strip() or "SUBMIT"
     except Exception as exc:
-        print(f"[DEBUG] Model error: {exc}", flush=True)
+        print(f"[DEBUG] LLM error: {exc}", flush=True)
         return "SUBMIT"
 
 
-def parse_action(text: str) -> tuple:
+def parse_action(text: str):
     t = text.strip()
     if t.upper().startswith("SUBMIT") or not t:
         return "", True
     t = t.replace("```python", "").replace("```", "").strip()
     return t, False
+
+# ---------------------------------------------------------------------------
+# HTTP env client (self-contained, no local imports needed)
+# ---------------------------------------------------------------------------
+
+async def http_reset(session, base_url: str, task_id: str, seed: int) -> dict:
+    import aiohttp
+    payload = {"action": {"type": "exec", "task_id": task_id, "seed": seed}}
+    async with session.post(f"{base_url}/reset", json=payload) as r:
+        return await r.json()
+
+
+async def http_step(session, base_url: str, action_type: str, code: str = None) -> dict:
+    import aiohttp
+    action = {"type": action_type}
+    if code:
+        action["code"] = code
+    async with session.post(f"{base_url}/step", json={"action": action}) as r:
+        return await r.json()
+
+
+def extract_obs(response: dict) -> dict:
+    """Normalise response to a flat obs dict regardless of server format."""
+    # Try nested observation key first
+    obs = response.get("observation", response)
+    if not isinstance(obs, dict):
+        obs = response
+    return obs
+
 
 # ---------------------------------------------------------------------------
 # Episode
@@ -170,28 +159,24 @@ async def run_episode() -> None:
     steps_taken: int         = 0
     score:       float       = 0.0
     success:     bool        = False
-    obs                      = None
 
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
+    # Create OpenAI client here — env vars guaranteed to be set by now
+    client = OpenAI(
+        base_url=os.environ["API_BASE_URL"],
+        api_key=os.environ["API_KEY"],
+    )
+
+    base_url = ENV_URL.rstrip("/")
+
     try:
-        # Instantiate client here so env vars are read at runtime
-        client = OpenAI(
-            base_url=os.environ["API_BASE_URL"],
-            api_key=os.environ["API_KEY"],
-        )
+        import aiohttp
 
-        DataCleaningEnv, DataCleaningAction = _load_env_client()
-
-        # Connect: docker image takes priority, then live URL
-        if IMAGE_NAME:
-            env = await DataCleaningEnv.from_docker_image(IMAGE_NAME)
-        else:
-            env = DataCleaningEnv(base_url=ENV_URL)
-
-        async with env:
-            result  = await env.reset(task_id=TASK_NAME, seed=DC_SEED)
-            obs     = result.observation
+        async with aiohttp.ClientSession() as session:
+            # Reset
+            resp    = await http_reset(session, base_url, TASK_NAME, DC_SEED)
+            obs     = extract_obs(resp)
             prev_result = ""
 
             messages = [
@@ -200,9 +185,10 @@ async def run_episode() -> None:
             ]
 
             for step in range(1, MAX_STEPS + 1):
-                if result.done:
+                if obs.get("done", False):
                     break
 
+                # LLM call — goes through the validator's proxy
                 response_text = get_model_action(client, messages)
                 messages.append({"role": "assistant", "content": response_text})
 
@@ -210,32 +196,29 @@ async def run_episode() -> None:
 
                 try:
                     if submit or step == MAX_STEPS:
-                        action = DataCleaningAction(type="submit")
+                        resp = await http_step(session, base_url, "submit")
                     else:
-                        action = DataCleaningAction(type="exec", code=code or "pass")
-                    result = await env.step(action)
+                        resp = await http_step(session, base_url, "exec", code or "pass")
                 except Exception as step_exc:
                     print(f"[DEBUG] step error: {step_exc}", flush=True)
-                    log_step(step=step, action=response_text, reward=0.0,
-                             done=True, error=str(step_exc)[:200])
+                    log_step(step, response_text, 0.0, True, str(step_exc)[:200])
                     steps_taken = step
                     rewards.append(0.0)
                     break
 
-                obs     = result.observation
-                reward  = float(result.reward or 0.0)
-                done    = result.done
-                error   = obs.error if obs.error else None
+                obs     = extract_obs(resp)
+                reward  = float(obs.get("reward", resp.get("reward", 0.0)) or 0.0)
+                done    = bool(obs.get("done", resp.get("done", False)))
+                error   = obs.get("error") or None
 
                 rewards.append(reward)
                 steps_taken = step
-                prev_result = obs.exec_result or ""
+                prev_result = obs.get("exec_result", "")
 
-                log_step(step=step, action=response_text, reward=reward,
-                         done=done, error=error)
+                log_step(step, response_text, reward, done, error)
 
                 if done:
-                    score = float(obs.reward)
+                    score = reward
                     break
 
                 messages.append({
@@ -249,17 +232,15 @@ async def run_episode() -> None:
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as exc:
-        print(f"[DEBUG] Episode failed: {exc}", flush=True)
-        import traceback
+        print(f"[DEBUG] Episode error: {exc}", flush=True)
         traceback.print_exc(file=sys.stdout)
         if steps_taken == 0:
-            log_step(step=1, action="(error)", reward=0.0, done=True,
-                     error=str(exc)[:200])
+            log_step(1, "(error)", 0.0, True, str(exc)[:200])
             steps_taken = 1
             rewards     = [0.0]
 
     finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards or [0.0])
+        log_end(success, steps_taken, score, rewards or [0.0])
 
 
 async def main() -> None:
