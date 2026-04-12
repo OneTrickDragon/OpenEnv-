@@ -166,7 +166,7 @@ async def run_episode() -> None:
 
     # Create OpenAI client here — env vars guaranteed to be set by now
     client = OpenAI(
-        base_url=API_BASE_URL, api_key=HF_TOKEN,
+        base_url=API_BASE_URL, api_key=HF_TOKEN
     )
 
     base_url = ENV_BASE_URL.rstrip("/")
