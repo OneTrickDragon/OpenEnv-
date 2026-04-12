@@ -30,7 +30,7 @@ from openai import OpenAI
 IMAGE_NAME   = os.getenv("LOCAL_IMAGE_NAME")
 #API_KEY      = os.getenv("API_KEY")
 #API_BASE_URL = os.getenv("API_BASE_URL")
-MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 TASK_NAME    = os.getenv("DC_TASK",    "ecommerce_easy")
 BENCHMARK    = "data-cleaning-openenv"
 DC_SEED      = int(os.getenv("DC_SEED", "42"))
@@ -167,10 +167,13 @@ async def run_episode() -> None:
         api_base = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
         
         # Ensure the proxy URL has the /v1 suffix
-        if api_base and not api_base.endswith("/v1"):
-            api_base = f"{api_base.rstrip('/')}/v1"
+        #if api_base and not api_base.endswith("/v1"):
+         #   api_base = f"{api_base.rstrip('/')}/v1"
 
-        client = OpenAI(base_url=api_base, api_key=api_key)
+        client = OpenAI(
+            base_url=os.environ["API_BASE_URL"],
+            api_key=os.environ["API_KEY"]
+        )
 
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from client import DataCleaningEnv
