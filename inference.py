@@ -7,37 +7,33 @@ Mandatory stdout format:
     [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 
 Environment variables (injected by validator):
-    API_KEY           LLM API key (injected by validator proxy)
-    API_BASE_URL      LLM proxy endpoint (injected by validator)
-    MODEL_NAME        Model to use. Default: Qwen/Qwen2.5-72B-Instruct
-    LOCAL_IMAGE_NAME  Docker image for the environment (optional)
-    DC_ENV_URL        Live Space URL. Default: the deployed HF Space
-    DC_TASK           Task name. Default: ecommerce_easy
-    DC_SEED           RNG seed. Default: 42
+    API_KEY           LLM API key
+    API_BASE_URL      LLM proxy endpoint
+    MODEL_NAME        Model identifier
+    LOCAL_IMAGE_NAME  Docker image for the environment
 """
 
 import asyncio
-import json
 import os
 import sys
 import textwrap
 import traceback
+from dataclasses import dataclass
 from typing import List, Optional
 
 from openai import OpenAI
 
 # ---------------------------------------------------------------------------
-# Configuration — read at call time inside functions, not at import time
+# Configuration — no fallbacks on validator-injected vars
 # ---------------------------------------------------------------------------
 
-IMAGE_NAME = os.getenv("IMAGE_NAME")
-MODEL_NAME = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
-TASK_NAME  = os.getenv("DC_TASK",    "ecommerce_easy")
-BENCHMARK  = "data-cleaning-openenv"
-DC_SEED    = int(os.getenv("DC_SEED", "42"))
-ENV_BASE_URL    = os.getenv("DC_ENV_URL", "https://onetrickdragon-data-cleaning-openenv.hf.space")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+IMAGE_NAME   = os.getenv("LOCAL_IMAGE_NAME")
+API_KEY      = os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL")
+MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
+TASK_NAME    = os.getenv("DC_TASK",    "ecommerce_easy")
+BENCHMARK    = "data-cleaning-openenv"
+DC_SEED      = int(os.getenv("DC_SEED", "42"))
 
 MAX_STEPS               = 8
 TEMPERATURE             = 0.3
@@ -86,17 +82,25 @@ SYSTEM_PROMPT = textwrap.dedent("""\
 """).strip()
 
 
-def build_prompt(obs_dict: dict, step: int, prev_result: str = "") -> str:
+def obs_get(obs, key: str, default=None):
+    """Get field from observation whether it's a dataclass or dict."""
+    if isinstance(obs, dict):
+        return obs.get(key, default)
+    return getattr(obs, key, default)
+
+
+def build_prompt(obs, step: int, prev_result: str = "") -> str:
     parts = [
-        f"TASK:\n{obs_dict.get('task_spec', '')}",
-        f"DATAFRAME:\n{obs_dict.get('df_preview', '')}",
-        f"DTYPES:\n{obs_dict.get('df_info', '')}",
-        f"PARTIAL SCORE: {obs_dict.get('partial_score', 0):.3f}  STEP: {step}/{MAX_STEPS}",
+        f"TASK:\n{obs_get(obs, 'task_spec', '')}",
+        f"DATAFRAME:\n{obs_get(obs, 'df_preview', '')}",
+        f"DTYPES:\n{obs_get(obs, 'df_info', '')}",
+        f"PARTIAL SCORE: {float(obs_get(obs, 'partial_score', 0)):.3f}  STEP: {step}/{MAX_STEPS}",
     ]
     if prev_result:
         parts.append(f"LAST OUTPUT:\n{prev_result[:300]}")
-    if obs_dict.get("error"):
-        parts.append(f"ERROR: {obs_dict['error'][:200]}")
+    err = obs_get(obs, "error")
+    if err:
+        parts.append(f"ERROR: {str(err)[:200]}")
     parts.append("Your code (or SUBMIT):")
     return "\n\n".join(parts)
 
@@ -123,33 +127,17 @@ def parse_action(text: str):
     t = t.replace("```python", "").replace("```", "").strip()
     return t, False
 
+
 # ---------------------------------------------------------------------------
-# HTTP env client (self-contained, no local imports needed)
+# Action dataclass
 # ---------------------------------------------------------------------------
 
-async def http_reset(session, base_url: str, task_id: str, seed: int) -> dict:
-    import aiohttp
-    payload = {"action": {"type": "exec", "task_id": task_id, "seed": seed}}
-    async with session.post(f"{base_url}/reset", json=payload) as r:
-        return await r.json()
-
-
-async def http_step(session, base_url: str, action_type: str, code: str = None) -> dict:
-    import aiohttp
-    action = {"type": action_type}
-    if code:
-        action["code"] = code
-    async with session.post(f"{base_url}/step", json={"action": action}) as r:
-        return await r.json()
-
-
-def extract_obs(response: dict) -> dict:
-    """Normalise response to a flat obs dict regardless of server format."""
-    # Try nested observation key first
-    obs = response.get("observation", response)
-    if not isinstance(obs, dict):
-        obs = response
-    return obs
+@dataclass
+class DataCleaningAction:
+    type:    str           = "exec"
+    code:    Optional[str] = None
+    task_id: str           = "ecommerce_easy"
+    seed:    int           = 42
 
 
 # ---------------------------------------------------------------------------
@@ -164,18 +152,24 @@ async def run_episode() -> None:
 
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
-    # Create OpenAI client here — env vars guaranteed to be set by now
+    # OpenAI client — uses validator-injected API_KEY and API_BASE_URL
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    base_url = ENV_BASE_URL.rstrip("/")
-
     try:
-        import aiohttp
+        # Add script directory to path so client.py is importable
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from client import DataCleaningEnv
 
-        async with aiohttp.ClientSession() as session:
-            # Reset
-            resp    = await http_reset(session, base_url, TASK_NAME, DC_SEED)
-            obs     = extract_obs(resp)
+        # Spin up environment from Docker image (mirrors the sample script)
+        if IMAGE_NAME:
+            env = await DataCleaningEnv.from_docker_image(IMAGE_NAME)
+        else:
+            env_url = os.getenv("DC_ENV_URL", "https://onetrickdragon-data-cleaning-openenv.hf.space")
+            env = DataCleaningEnv(base_url=env_url)
+
+        async with env:
+            result      = await env.reset(task_id=TASK_NAME, seed=DC_SEED)
+            obs         = result.observation
             prev_result = ""
 
             messages = [
@@ -184,10 +178,10 @@ async def run_episode() -> None:
             ]
 
             for step in range(1, MAX_STEPS + 1):
-                if obs.get("done", False):
+                if obs_get(obs, "done", False):
                     break
 
-                # LLM call — goes through the validator's proxy
+                # LLM call — routed through validator proxy
                 response_text = get_model_action(client, messages)
                 messages.append({"role": "assistant", "content": response_text})
 
@@ -195,9 +189,9 @@ async def run_episode() -> None:
 
                 try:
                     if submit or step == MAX_STEPS:
-                        resp = await http_step(session, base_url, "submit")
+                        result = await env.step(DataCleaningAction(type="submit"))
                     else:
-                        resp = await http_step(session, base_url, "exec", code or "pass")
+                        result = await env.step(DataCleaningAction(type="exec", code=code or "pass"))
                 except Exception as step_exc:
                     print(f"[DEBUG] step error: {step_exc}", flush=True)
                     log_step(step, response_text, 0.0, True, str(step_exc)[:200])
@@ -205,14 +199,14 @@ async def run_episode() -> None:
                     rewards.append(0.0)
                     break
 
-                obs     = extract_obs(resp)
-                reward  = float(obs.get("reward", resp.get("reward", 0.0)) or 0.0)
-                done    = bool(obs.get("done", resp.get("done", False)))
-                error   = obs.get("error") or None
+                obs         = result.observation
+                reward      = float(result.reward or 0.0)
+                done        = bool(obs_get(obs, "done", False))
+                error       = obs_get(obs, "error") or None
+                prev_result = obs_get(obs, "exec_result", "") or ""
 
                 rewards.append(reward)
                 steps_taken = step
-                prev_result = obs.get("exec_result", "")
 
                 log_step(step, response_text, reward, done, error)
 
