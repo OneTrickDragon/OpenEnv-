@@ -117,7 +117,7 @@ def get_model_action(client: OpenAI, messages: list) -> str:
         return (completion.choices[0].message.content or "").strip() or "SUBMIT"
     except Exception as exc:
         print(f"[DEBUG] LLM error: {exc}", flush=True)
-        return "SUBMIT"
+        raise exc
 
 
 def parse_action(text: str):
@@ -153,6 +153,8 @@ async def run_episode() -> None:
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
     # OpenAI client — uses validator-injected API_KEY and API_BASE_URL
+    if API_BASE_URL and not API_BASE_URL.endswith("/v1"):
+        API_BASE_URL = f"{API_BASE_URL.rstrip('/')}/v1"
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
     try:
