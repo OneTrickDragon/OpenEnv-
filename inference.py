@@ -37,6 +37,7 @@ BENCHMARK  = "data-cleaning-openenv"
 DC_SEED    = int(os.getenv("DC_SEED", "42"))
 ENV_BASE_URL    = os.getenv("DC_ENV_URL", "https://localhost:7860")
 HF_TOKEN  = os.getenv("HF_TOKEN")
+API_BASE_URL = os.environ("API_BASE_URL", "https://router.hugginface.co.v1")
 
 MAX_STEPS               = 8
 TEMPERATURE             = 0.3
@@ -165,8 +166,7 @@ async def run_episode() -> None:
 
     # Create OpenAI client here — env vars guaranteed to be set by now
     client = OpenAI(
-        base_url=os.environ("API_BASE_URL", "https://router.hugginface.co.v1"),
-        api_key=HF_TOKEN,
+        base_url=API_BASE_URL, api_key=HF_TOKEN,
     )
 
     base_url = ENV_BASE_URL.rstrip("/")
