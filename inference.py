@@ -35,7 +35,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 TASK_NAME  = os.getenv("DC_TASK",    "ecommerce_easy")
 BENCHMARK  = "data-cleaning-openenv"
 DC_SEED    = int(os.getenv("DC_SEED", "42"))
-ENV_BASE_URL    = os.getenv("DC_ENV_URL", "https://localhost:7860")
+ENV_BASE_URL    = os.getenv("DC_ENV_URL", "https://onetrickdragon-data-cleaning-openenv.hf.space")
 HF_TOKEN  = os.getenv("HF_TOKEN")
 API_BASE_URL = os.environ("API_BASE_URL", "https://router.hugginface.co.v1")
 
@@ -165,9 +165,12 @@ async def run_episode() -> None:
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
     # Create OpenAI client here — env vars guaranteed to be set by now
-    client = OpenAI(
+    if HF_TOKEN:
+        client = OpenAI(
         base_url=API_BASE_URL, api_key=HF_TOKEN
     )
+    else:
+        client = None
 
     base_url = ENV_BASE_URL.rstrip("/")
 
